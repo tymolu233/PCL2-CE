@@ -45,19 +45,10 @@ Public Class PageLinkLobby
         HintAnnounce.Theme = MyHint.Themes.Blue
         RunInNewThread(
             Sub()
+                ' 移除联机大厅协议授权
                 If Not Setup.Get("LinkEula") Then
-                    Select Case MyMsgBox($"在使用 PCL CE 大厅之前，请阅读并同意以下条款：{vbCrLf}{vbCrLf}我承诺严格遵守中国大陆相关法律法规，不会将大厅功能用于违法违规用途。{vbCrLf}我已知晓大厅功能使用途中可能需要提供管理员权限以用于必要的操作，并会确保 PCL CE 为从官方发布渠道下载的副本。{vbCrLf}我承诺使用大厅功能带来的一切风险自行承担。{vbCrLf}我已知晓并同意 PCL CE 收集经处理的本机识别码、Natayark ID 与其他信息并在必要时提供给执法部门。{vbCrLf}为保护未成年人个人信息，使用联机大厅前，我确认我已满十四周岁。{vbCrLf}{vbCrLf}另外，你还需要同意 PCL CE 大厅相关隐私政策及《Natayark OpenID 服务条款》。", "联机大厅协议授权",
-                                                    "我已阅读并同意", "拒绝并返回", "查看相关隐私协议",
-                                                    Button3Action:=Sub() OpenWebsite("https://www.pclc.cc/privacy/personal-info-brief.html"))
-                        Case 1
-                            Setup.Set("LinkEula", True)
-                        Case 2
-                            RunInUi(
-                            Sub()
-                                FrmMain.PageChange(New FormMain.PageStackData With {.Page = FormMain.PageType.Launch})
-                                FrmLinkLobby = Nothing
-                            End Sub)
-                    End Select
+                    Setup.Set("LinkEula", True)
+                    Log("[Link] 已自动同意联机大厅协议。")
                 End If
             End Sub)
         '加载公告
@@ -65,15 +56,7 @@ Public Class PageLinkLobby
         If _linkAnnounceUpdateCancelSource IsNot Nothing Then _linkAnnounceUpdateCancelSource.Cancel()
         _linkAnnounceUpdateCancelSource = New CancellationTokenSource()
         Dispatcher.BeginInvoke(Async Sub() Await _LinkAnnounceUpdate()) '我实在不理解为啥 BeginInvoke 这个委托要 MustBeInherit
-        '刷新 NAID 令牌
-        If Not String.IsNullOrWhiteSpace(Setup.Get("LinkNaidRefreshToken")) Then
-            If Not String.IsNullOrWhiteSpace(Setup.Get("LinkNaidRefreshExpiresAt")) AndAlso Convert.ToDateTime(Setup.Get("LinkNaidRefreshExpiresAt")).CompareTo(DateTime.Now) < 0 Then
-                Setup.Set("LinkNaidRefreshToken", "")
-                Hint("Natayark ID 令牌已过期，请重新登录", HintType.Critical)
-            Else
-                GetNaidData(Setup.Get("LinkNaidRefreshToken"), True)
-            End If
-        End If
+        '刷新 NAID 令牌 (已移除)
         DetectMcInstance()
         IsLoading = False
     End Sub
@@ -145,81 +128,40 @@ Public Class PageLinkLobby
         RunInNewThread(
             Sub()
                 Try
-                    Dim serverNumber = 0
-                    Dim jObj As JObject = Nothing
-                    Dim cache As Integer
-                    While serverNumber < LinkServers.Length
-                        Try
-                            cache = Integer.Parse(NetRequestOnce($"{LinkServers(serverNumber)}/api/link/v2/cache.ini", "GET", Nothing, "application/json", Timeout:=7000).Trim())
-                            If cache = Config.Link.AnnounceCacheVer Then
-                                Log("[Link] 使用缓存的公告数据")
-                                jObj = GetJson(Config.Link.AnnounceCache)
-                            Else
-                                Log("[Link] 尝试拉取公告数据")
-                                Dim received As String = NetRequestOnce($"{LinkServers(serverNumber)}/api/link/v2/announce.json", "GET", Nothing, "application/json", Timeout:=7000)
-                                jObj = GetJson(received)
-                                Config.Link.AnnounceCache = received
-                                Config.Link.AnnounceCacheVer = cache
-                            End If
-                            Exit While
-                        Catch ex As Exception
-                            Log(ex, $"[Link] 从服务器 {serverNumber} 获取公告缓存失败")
-                            Config.Link.AnnounceCacheConfig.Reset()
-                            Config.Link.AnnounceCacheVerConfig.Reset()
-                            serverNumber += 1
-                        End Try
-                    End While
-                    If jObj Is Nothing Then Throw New Exception("获取联机数据失败")
-                    IsLobbyAvailable = jObj("available")
-                    AllowCustomName = jObj("allowCustomName")
-                    RequiresLogin = jObj("requireLogin")
-                    RequiresRealName = jObj("requireRealname")
-                    If Not Val(jObj("version")) <= ProtocolVersion Then
-                        RunInUi(
-                            Sub()
-                                HintAnnounce.Theme = MyHint.Themes.Red
-                                HintAnnounce.Text = "请更新到最新版本 PCL CE 以使用大厅"
-                                IsLobbyAvailable = False
-                            End Sub)
-                        Exit Sub
-                    End If
-                    '公告
-                    Dim notices As JArray = jObj("notices")
-                    For Each notice As JObject In notices
-                        Dim announceContent = notice("content").ToString()
-                        If Not String.IsNullOrWhiteSpace(announceContent) Then
-                            If VersionCode < Val(notice("minVer")) OrElse VersionCode > Val(notice("maxVer")) Then Continue For
-                            Dim type As LinkAnnounceType
-                            If notice("type") = "important" OrElse notice("type") = "red" Then
-                                type = LinkAnnounceType.Important
-                            ElseIf notice("type") = "warning" OrElse notice("type") = "yellow" Then
-                                type = LinkAnnounceType.Warning
-                            Else
-                                type = LinkAnnounceType.Notice
-                            End If
-                            Dim announces As String() = announceContent.Split(vbLf)
-                            For Each announce As String In announces
-                                _linkAnnounces.Add(New LinkAnnounceInfo(type, announce))
-                            Next
-                        End If
-                    Next
-                    '中继服务器
-                    Dim relays As JArray = jObj("relays")
+                    ' 从新的 API 获取节点列表
+                    Log("[Link] 尝试从 uptime.easytier.cn 拉取节点数据")
+                    Dim received As String = NetRequestOnce("https://uptime.easytier.cn/api/nodes?page=1&per_page=200&is_active=true", "GET", Nothing, "application/json", Timeout:=7000)
+                    Dim jObj = GetJson(received)
+
+                    ' 解析新的 JSON 结构
+                    Dim relays As JArray = jObj("data")("items")
                     ETRelay.RelayList = New List(Of ETRelay)
                     For Each relay In relays
                         ETRelay.RelayList.Add(New ETRelay With {
                             .Name = relay("name").ToString(),
-                            .Url = relay("url").ToString(),
-                            .Type = If(relay("type") = "official", ETRelayType.Selfhosted, ETRelayType.Community)
+                            .Url = relay("address").ToString(),
+                            .Type = ETRelayType.Community ' 全部视为社区节点
                         })
                     Next
+                    Log($"[Link] 成功获取 {ETRelay.RelayList.Count} 个节点")
+                    RunInUi(Sub()
+                                HintAnnounce.Theme = MyHint.Themes.Blue
+                                HintAnnounce.Text = "节点列表已从公共 API 更新"
+                            End Sub)
+
                 Catch ex As Exception
-                    IsLobbyAvailable = False
+                    ' 即使获取失败，也确保联机可用
+                    Log(ex, "[Link] 从公共 API 获取节点列表失败")
                     RunInUi(Sub()
                                 HintAnnounce.Theme = MyHint.Themes.Red
-                                HintAnnounce.Text = "连接到大厅服务器失败"
+                                HintAnnounce.Text = "获取公共节点列表失败，请手动添加"
                             End Sub)
-                    Log(ex, "[Link] 获取大厅公告失败")
+                Finally
+                    ' 确保联机功能始终可用
+                    IsLobbyAvailable = True
+                    AllowCustomName = True
+                    RequiresLogin = False
+                    RequiresRealName = False
                 End Try
             End Sub)
     End Sub
